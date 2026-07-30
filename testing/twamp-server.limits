@@ -1,0 +1,6 @@
+# Минимальная политика открытого режима для нагрузочных прогонов: без
+# ограничений по диску и полосе, чтобы движок политик не оказался тем
+# узким местом, которое мы измеряем.
+limit root with disk=0, bandwidth=0, delete_on_fetch=on, allow_open_mode=on
+limit regular with parent=root, disk=0, bandwidth=0
+assign default regular

@@ -1,0 +1,13 @@
+# Собранные бинарники
+/twping
+/twping.exe
+/testing/twping-go
+/testing/twping-go.exe
+
+# Артефакты релиза
+/dist/
+
+# Профили и покрытие
+*.out
+*.test
+*.prof

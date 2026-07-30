@@ -1,0 +1,6 @@
+# В репозитории всё хранится с переводами строк LF.
+* text=auto eol=lf
+
+# Скрипты должны оставаться с LF, иначе они не запустятся в Linux.
+*.sh text eol=lf
+Dockerfile* text eol=lf

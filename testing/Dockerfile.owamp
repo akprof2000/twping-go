@@ -1,0 +1,53 @@
+# Эталонное окружение: оригинальный сервер twampd и клиент twping из perfSONAR
+# owamp, собранные из исходников. Используется для проверки совместимости порта
+# на Go и для сравнения его с оригиналом на C.
+FROM debian:12-slim AS build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git ca-certificates build-essential autoconf automake libtool \
+        pkg-config libssl-dev libcap-dev groff-base
+
+WORKDIR /src
+
+# I2util — зависимость сборки owamp, живёт в отдельном репозитории.
+RUN git clone --depth 1 https://github.com/perfsonar/i2util.git \
+    && cd i2util/I2util/I2util \
+    && ./bootstrap \
+    && ./configure --prefix=/usr/local \
+    && make -j"$(nproc)" \
+    && make install
+
+RUN git clone --depth 1 https://github.com/perfsonar/owamp.git \
+    && cd owamp/owamp/owamp \
+    && ./bootstrap \
+    && ./configure --prefix=/usr/local --with-I2util=/usr/local \
+    && make -j"$(nproc)" \
+    && make install
+
+FROM debian:12-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libssl3 libcap2 iproute2 iputils-ping procps time gawk \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /usr/local/bin/ /usr/local/bin/
+COPY --from=build /usr/local/lib/ /usr/local/lib/
+COPY --from=build /usr/local/sbin/ /usr/local/sbin/
+RUN ldconfig
+
+# Клиент на Go, кросс-собранный под linux/amd64, чтобы оба клиента работали в
+# одинаковом окружении.
+COPY twping-go /usr/local/bin/twping-go
+COPY loadtest.sh /usr/local/bin/loadtest.sh
+RUN chmod +x /usr/local/bin/loadtest.sh
+
+RUN mkdir -p /etc/twamp /var/lib/owamp /var/run/owamp
+COPY twamp-server.limits /etc/twamp/twamp-server.limits
+COPY twamp-server.conf /etc/twamp/twamp-server.conf
+
+EXPOSE 862/tcp
+EXPOSE 8760-8960/udp
+
+CMD ["twampd", "-f", "-Z", "-R", "/var/run/owamp", "-d", "/var/lib/owamp", "-c", "/etc/twamp", "-a", "O", "-P", "8760-8960", "-v"]
