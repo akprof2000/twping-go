@@ -1,6 +1,7 @@
 package owamp
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -81,6 +82,18 @@ func (c *Control) Close() error { return c.conn.Close() }
 
 // OpenControl выполняет установление связи TWAMP-Control.
 func OpenControl(cfg ControlConfig) (*Control, error) {
+	return OpenControlContext(context.Background(), cfg)
+}
+
+// OpenControlContext делает то же, что OpenControl, но прерывает подключение
+// по отмене контекста.
+//
+// Без этого отмена не действует на стадии установления TCP-соединения:
+// недоступный сервер держит вызывающего до истечения Timeout (а без него —
+// до системного таймаута примерно в полминуты). Программам, которые
+// останавливают замер по своей причине — например, потому что задачу удалили, —
+// такое ожидание не нужно.
+func OpenControlContext(ctx context.Context, cfg ControlConfig) (*Control, error) {
 	network := cfg.Network
 	if network == "" {
 		network = "tcp"
@@ -106,7 +119,7 @@ func OpenControl(cfg ControlConfig) (*Control, error) {
 		}
 	}
 
-	conn, err := d.Dial(network, server)
+	conn, err := d.DialContext(ctx, network, server)
 	if err != nil {
 		return nil, err
 	}
