@@ -35,7 +35,7 @@ build() {
     # результата сборки.
     CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
         go build -trimpath \
-            -ldflags "-s -w -buildid= -X main.version=${LDVERSION}" \
+            -ldflags "-s -w -buildid= -X github.com/akprof2000/twping-go/twping.version=${LDVERSION}" \
             -o "$dir/$bin" ./cmd/twping
 
     cp README.md LICENSE NOTICE "$dir/"
