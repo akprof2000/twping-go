@@ -114,10 +114,19 @@ func usage(out io.Writer) {
 // Run выполняет замер по аргументам командной строки twping (без имени
 // программы) и пишет результат в out, а диагностику — в errOut.
 //
+// Сводка печатается подписями оригинального twping из perfSONAR: на них
+// рассчитаны инструменты, которые разбирают отчёт. Русский вариант выбирается
+// через RunLang — его использует сама утилита.
+//
 // Отмена ctx прерывает идущую сессию: так вызывающая программа останавливает
 // замер, не убивая процесс. Своих обработчиков сигналов пакет не ставит — это
 // дело программы, а не библиотеки.
 func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
+	return RunLang(ctx, args, out, errOut, owamp.English)
+}
+
+// RunLang делает то же, что Run, но позволяет выбрать язык подписей в сводке.
+func RunLang(ctx context.Context, args []string, out, errOut io.Writer, lang owamp.Language) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -392,7 +401,13 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if !o.quiet {
 		eta := owamp.EstimateDuration(spec, rttBound)
 		remaining := time.Until(spec.StartTime.AbsTime()) + eta
-		fmt.Fprintf(out, "Результаты будут доступны примерно через %.1f с\n", remaining.Seconds())
+		// Строка попадает в тот же поток, что и сводка, поэтому подчиняется
+		// её языку: иначе английский отчёт начинался бы русской фразой.
+		if lang == owamp.Russian {
+			fmt.Fprintf(out, "Результаты будут доступны примерно через %.1f с\n", remaining.Seconds())
+		} else {
+			fmt.Fprintf(out, "Approximately %.1f seconds until results available\n", remaining.Seconds())
+		}
 	}
 
 	// --- Подготовка вывода --------------------------------------------
@@ -492,7 +507,7 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if o.machine {
 		stats.PrintMachine(stdout)
 	} else {
-		stats.PrintSummary(stdout, percentiles)
+		stats.PrintSummaryLang(stdout, percentiles, lang)
 	}
 	return nil
 }

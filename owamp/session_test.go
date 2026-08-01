@@ -263,12 +263,33 @@ func TestSummaryOutput(t *testing.T) {
 	}
 	stats.SetFinished(true)
 
+	// По умолчанию сводка печатается подписями оригинального twping: на них
+	// рассчитаны инструменты, которые её разбирают.
 	var human bytes.Buffer
 	stats.PrintSummary(&human, []float64{95})
 	out := human.String()
 	for _, want := range []string{
-		"--- статистика twping от",
+		"--- twping statistics from",
 		"SID:",
+		"6 sent, 0 lost (0.000%)",
+		"round-trip time min/median/max",
+		"send time min/median/max",
+		"reflect time min/median/max",
+		"reflector processing time min/max",
+		"two-way jitter",
+		"Percentiles:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("в английской сводке отсутствует %q\n---\n%s", want, out)
+		}
+	}
+
+	// Русский вариант выбирается явно — его печатает сама утилита.
+	var russian bytes.Buffer
+	stats.PrintSummaryLang(&russian, []float64{95}, Russian)
+	rout := russian.String()
+	for _, want := range []string{
+		"--- статистика twping от",
 		"отправлено 6, потеряно 0 (0.000%)",
 		"время кругового обхода мин/медиана/макс",
 		"время до отражателя мин/медиана/макс",
@@ -277,8 +298,8 @@ func TestSummaryOutput(t *testing.T) {
 		"джиттер (двусторонний)",
 		"Процентили:",
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("в сводке отсутствует %q\n---\n%s", want, out)
+		if !strings.Contains(rout, want) {
+			t.Errorf("в русской сводке отсутствует %q\n---\n%s", want, rout)
 		}
 	}
 

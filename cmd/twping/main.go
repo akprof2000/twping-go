@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/akprof2000/twping-go/owamp"
 	"github.com/akprof2000/twping-go/twping"
 )
 
@@ -23,7 +24,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	if err := twping.Run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	// Утилиту читает человек, поэтому сводка русская. Библиотечный вызов
+	// (twping.Run) остаётся на английском — его разбирают программы.
+	if err := twping.RunLang(ctx, os.Args[1:], os.Stdout, os.Stderr, owamp.Russian); err != nil {
 		fmt.Fprintf(os.Stderr, "twping: %v\n", err)
 		os.Exit(1)
 	}

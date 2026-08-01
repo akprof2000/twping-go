@@ -40,17 +40,45 @@ func (d DelayType) machineSuffix() string {
 	return "_UNKNOWN"
 }
 
+// Language выбирает язык подписей в сводке.
+//
+// Английский набор дословно повторяет вывод оригинального twping из perfSONAR:
+// на него рассчитаны инструменты, которые разбирают отчёт. Русский набор —
+// для человека, читающего вывод утилиты.
+type Language int
+
+const (
+	// English — подписи как у оригинального twping (по умолчанию).
+	English Language = iota
+	// Russian — русские подписи.
+	Russian
+)
+
 // describe возвращает название набора задержек для отчёта.
-func (d DelayType) describe() string {
+func (d DelayType) describe(lang Language) string {
+	if lang == Russian {
+		switch d {
+		case DelayRTT:
+			return "время кругового обхода"
+		case DelayFwd:
+			return "время до отражателя"
+		case DelayBck:
+			return "время от отражателя"
+		case DelayProc:
+			return "время обработки на отражателе"
+		}
+		return ""
+	}
+
 	switch d {
 	case DelayRTT:
-		return "время кругового обхода"
+		return "round-trip time"
 	case DelayFwd:
-		return "время до отражателя"
+		return "send time"
 	case DelayBck:
-		return "время от отражателя"
+		return "reflect time"
 	case DelayProc:
-		return "время обработки на отражателе"
+		return "reflector processing time"
 	}
 	return ""
 }
@@ -79,6 +107,31 @@ func ScaleFactor(unit byte) (float64, string, error) {
 	default:
 		return 0, "", fmt.Errorf("недопустимая единица %q: ожидается одна из n, u, m, s", string(unit))
 	}
+}
+
+// unitAbbrev возвращает сокращение единицы измерения на выбранном языке.
+// В английской сводке единицы обязаны быть английскими: она дословно повторяет
+// вывод оригинального twping, и «0.35 мс» в ней смотрелось бы разнобоем.
+func unitAbbrev(unit byte, lang Language) string {
+	if lang == Russian {
+		_, abrv, err := ScaleFactor(unit)
+		if err != nil {
+			return ""
+		}
+		return abrv
+	}
+
+	switch unit {
+	case 'n', 'N':
+		return "ns"
+	case 'u', 'U':
+		return "us"
+	case 'm', 'M':
+		return "ms"
+	case 's', 'S':
+		return "s"
+	}
+	return ""
 }
 
 // StatsConfig задаёт параметры сбора статистики.
@@ -428,18 +481,43 @@ func (s *Stats) ttlRange(t TTLType) (values int, minTTL, maxTTL uint8) {
 
 // PrintSummary печатает человекочитаемую сводку с той же структурой, что и
 // у twping.
+// PrintSummary печатает сводку подписями оригинального twping (английскими).
 func (s *Stats) PrintSummary(w io.Writer, percentiles []float64) {
+	s.PrintSummaryLang(w, percentiles, English)
+}
+
+// PrintSummaryLang печатает сводку на выбранном языке.
+//
+// Величины, их порядок и формат чисел от языка не зависят — меняются только
+// подписи, поэтому один и тот же разбор применим к обоим вариантам.
+func (s *Stats) PrintSummaryLang(w io.Writer, percentiles []float64, lang Language) {
+	ru := lang == Russian
+	pick := func(en, rus string) string {
+		if ru {
+			return rus
+		}
+		return en
+	}
+	// Единицы измерения тоже подчиняются языку сводки.
+	unit := unitAbbrev(s.cfg.Unit, lang)
+
 	if s.clocksOffset {
-		fmt.Fprintf(w, "\nОднонаправленные задержки могут быть неточны: часы не синхронизированы!\n")
+		// Здесь и ниже Fprint, а не Fprintf: подпись выбирается на ходу,
+		// а формат-строку из переменной go vet справедливо не пропускает.
+		fmt.Fprint(w, pick(
+			"\nOne-way delays may be inaccurate: clocks are not synchronized!\n",
+			"\nОднонаправленные задержки могут быть неточны: часы не синхронизированы!\n"))
 	}
 
-	fmt.Fprintf(w, "\n--- статистика twping от [%s]:%s к [%s]:%s ---\n",
+	fmt.Fprintf(w, pick("\n--- twping statistics from [%s]:%s to [%s]:%s ---\n",
+		"\n--- статистика twping от [%s]:%s к [%s]:%s ---\n"),
 		s.cfg.FromHost, s.cfg.FromServ, s.cfg.ToHost, s.cfg.ToServ)
 	fmt.Fprintf(w, "SID:\t%x\n", s.cfg.SID)
 
 	first := s.startTime.AbsTime()
 	last := s.endTime.AbsTime()
-	fmt.Fprintf(w, "первый:\t%s.%03d\nпоследний:\t%s.%03d\n",
+	fmt.Fprintf(w, pick("first:\t%s.%03d\nlast:\t%s.%03d\n",
+		"первый:\t%s.%03d\nпоследний:\t%s.%03d\n"),
 		first.Format("2006-01-02T15:04:05"), first.Nanosecond()/1e6,
 		last.Format("2006-01-02T15:04:05"), last.Nanosecond()/1e6)
 
@@ -447,54 +525,66 @@ func (s *Stats) PrintSummary(w io.Writer, percentiles []float64) {
 	if s.sent > 0 {
 		lossPct = float64(s.lost) / float64(s.sent)
 	}
-	fmt.Fprintf(w, "отправлено %d, потеряно %d (%.3f%%), ", s.sent, s.lost, 100*lossPct)
-	fmt.Fprintf(w, "дубликатов при отправке %d, при отражении %d\n", s.dupsFwd, s.dupsBck)
+	fmt.Fprintf(w, pick("%d sent, %d lost (%.3f%%), ",
+		"отправлено %d, потеряно %d (%.3f%%), "), s.sent, s.lost, 100*lossPct)
+	fmt.Fprintf(w, pick("%d send duplicates, %d reflect duplicates\n",
+		"дубликатов при отправке %d, при отражении %d\n"), s.dupsFwd, s.dupsBck)
 
 	for _, t := range []DelayType{DelayRTT, DelayFwd, DelayBck} {
 		med, ok := s.percentile(0.5, t)
-		fmt.Fprintf(w, "%s мин/медиана/макс = %s/%s/%s %s, ",
-			t.describe(), s.minStr(t), s.fmtScaled(med, ok), s.maxStr(t), s.abrv)
+		fmt.Fprintf(w, pick("%s min/median/max = %s/%s/%s %s, ",
+			"%s мин/медиана/макс = %s/%s/%s %s, "),
+			t.describe(lang), s.minStr(t), s.fmtScaled(med, ok), s.maxStr(t), unit)
 		if s.syncCount > 0 {
-			fmt.Fprintf(w, "(погрешность=%.3g %s)\n", s.maxErr[t]*s.scale, s.abrv)
+			fmt.Fprintf(w, pick("(err=%.3g %s)\n", "(погрешность=%.3g %s)\n"),
+				s.maxErr[t]*s.scale, unit)
 		} else {
-			fmt.Fprintf(w, "(без синхронизации)\n")
+			fmt.Fprint(w, pick("(unsync)\n", "(без синхронизации)\n"))
 		}
 	}
-	fmt.Fprintf(w, "%s мин/макс = %s/%s %s\n",
-		DelayProc.describe(), s.minStr(DelayProc), s.maxStr(DelayProc), s.abrv)
+	fmt.Fprintf(w, pick("%s min/max = %s/%s %s\n", "%s мин/макс = %s/%s %s\n"),
+		DelayProc.describe(lang), s.minStr(DelayProc), s.maxStr(DelayProc), unit)
 
 	for _, t := range []DelayType{DelayRTT, DelayFwd, DelayBck} {
 		j, ok := s.jitter(t)
-		desc := map[DelayType]string{
-			DelayRTT: "двусторонний",
-			DelayFwd: "до отражателя",
-			DelayBck: "от отражателя",
+		// Подписи джиттера в оригинале не в скобках: "two-way jitter = …".
+		en := map[DelayType]string{
+			DelayRTT: "two-way jitter",
+			DelayFwd: "send jitter",
+			DelayBck: "reflect jitter",
 		}[t]
-		fmt.Fprintf(w, "джиттер (%s) = %s %s (P95-P50)\n", desc, s.fmtScaled(j, ok), s.abrv)
+		rus := map[DelayType]string{
+			DelayRTT: "джиттер (двусторонний)",
+			DelayFwd: "джиттер (до отражателя)",
+			DelayBck: "джиттер (от отражателя)",
+		}[t]
+		fmt.Fprintf(w, "%s = %s %s (P95-P50)\n", pick(en, rus), s.fmtScaled(j, ok), unit)
 	}
 
 	if len(percentiles) > 0 {
-		fmt.Fprintf(w, "Процентили:\n")
+		fmt.Fprint(w, pick("Percentiles:\n", "Процентили:\n"))
 		for _, p := range percentiles {
 			v, ok := s.percentile(p/100.0, DelayRTT)
-			fmt.Fprintf(w, "\t%.1f: %s %s\n", p, s.fmtScaled(v, ok), s.abrv)
+			fmt.Fprintf(w, "\t%.1f: %s %s\n", p, s.fmtScaled(v, ok), unit)
 		}
 	}
 
 	for _, t := range []TTLType{TTLFwd, TTLBck} {
-		desc := "до отражателя"
+		en, rus := "send", "до отражателя"
 		if t == TTLBck {
-			desc = "от отражателя"
+			en, rus = "reflect", "от отражателя"
 		}
 		n, minTTL, maxTTL := s.ttlRange(t)
 		switch {
 		case n < 1:
-			fmt.Fprintf(w, "TTL (%s) не сообщается\n", desc)
+			fmt.Fprintf(w, pick("%s TTL not reported\n", "TTL (%s) не сообщается\n"), pick(en, rus))
 		case n == 1:
-			fmt.Fprintf(w, "число хопов (%s) = %d (неизменно)\n", desc, 255-int(minTTL))
+			fmt.Fprintf(w, pick("%s hops = %d (consistently)\n",
+				"число хопов (%s) = %d (неизменно)\n"), pick(en, rus), 255-int(minTTL))
 		default:
-			fmt.Fprintf(w, "число хопов (%s) принимает %d значений; минимум %d, максимум %d\n",
-				desc, n, 255-int(maxTTL), 255-int(minTTL))
+			fmt.Fprintf(w, pick("%s hops takes %d values; min hops = %d, max hops = %d\n",
+				"число хопов (%s) принимает %d значений; минимум %d, максимум %d\n"),
+				pick(en, rus), n, 255-int(maxTTL), 255-int(minTTL))
 		}
 	}
 
