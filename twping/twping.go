@@ -469,24 +469,28 @@ func RunLang(ctx context.Context, args []string, out, errOut io.Writer, lang owa
 
 	// --- Запуск теста -------------------------------------------------
 	// Прерывание приходит через контекст: в утилите его снимает обработчик
-	// Ctrl+C, в чужой программе — её собственная логика отмены.
-	interrupted := make(chan struct{})
+	// Ctrl+C, в чужой программе — её собственная логика отмены. Сторож будит
+	// сессию, закрывая её сокет, — сам Run блокирующий.
+	//
+	// Канал закрывает только владелец, то есть эта функция. Раньше его закрывали
+	// оба — и сторож, и основной поток, — и когда отмена совпадала с завершением
+	// замера, второй close ронял процесс с «close of closed channel». На отмене
+	// по таймауту задачи такое совпадение случается регулярно.
+	finished := make(chan struct{})
+	defer close(finished)
+
 	go func() {
 		select {
 		case <-ctx.Done():
-			close(interrupted)
 			sess.Close()
-		case <-interrupted:
+		case <-finished:
 		}
 	}()
 
 	runErr := sess.Run(spec, sid, sink)
 
-	select {
-	case <-interrupted:
+	if ctx.Err() != nil {
 		return errors.New("прервано")
-	default:
-		close(interrupted)
 	}
 
 	accept := owamp.AcceptOK
