@@ -35,13 +35,39 @@ type ControlConfig struct {
 	Passphrase []byte
 	// Timeout ограничивает время установления TCP-соединения.
 	Timeout time.Duration
+	// ExchangeTimeout ограничивает каждый обмен по управляющему каналу:
+	// приветствие сервера, согласование режима, запрос и старт сессии.
+	//
+	// Без него клиент беззащитен перед сервером, который принял соединение и
+	// замолчал: чтение висит бесконечно, и остановить его нечем — ни отменой,
+	// ни таймаутом вызывающей программы. На пробе, ведущей тысячи замеров,
+	// такие «висяки» копятся и держат порты, пока не кончится пул.
+	//
+	// Ноль означает значение по умолчанию (defaultExchangeTimeout).
+	// Отрицательное — «без ограничения», прежнее поведение.
+	ExchangeTimeout time.Duration
 	// DSCP, если отличен от нуля, применяется к сокету управляющего соединения.
 	DSCP uint8
 }
 
+// defaultExchangeTimeout — сколько ждать ответа сервера на каждом шаге
+// управляющего обмена, если ExchangeTimeout не задан.
+//
+// Тридцать секунд — тот же порядок, что и таймаут подключения: шаги короткие
+// (сервер отвечает сразу), поэтому ожидание такой длины означает, что ответа
+// уже не будет.
+const defaultExchangeTimeout = 30 * time.Second
+
 // Control — открытое управляющее соединение TWAMP.
 type Control struct {
 	conn net.Conn
+
+	// exchangeTimeout применяется к каждому чтению и записи управляющего канала.
+	exchangeTimeout time.Duration
+
+	// watchdog закрывает соединение при отмене контекста: чтение, уже начатое,
+	// иначе не прервать — дедлайн спасает от молчания, а это от отмены.
+	watchdogDone chan struct{}
 
 	mode uint32
 
@@ -77,8 +103,17 @@ func (c *Control) LocalAddr() *net.TCPAddr { return c.conn.LocalAddr().(*net.TCP
 // RemoteAddr возвращает удалённый адрес управляющего соединения.
 func (c *Control) RemoteAddr() *net.TCPAddr { return c.conn.RemoteAddr().(*net.TCPAddr) }
 
-// Close закрывает управляющее соединение.
-func (c *Control) Close() error { return c.conn.Close() }
+// Close закрывает управляющее соединение и снимает сторож контекста.
+func (c *Control) Close() error {
+	if c.watchdogDone != nil {
+		select {
+		case <-c.watchdogDone:
+		default:
+			close(c.watchdogDone)
+		}
+	}
+	return c.conn.Close()
+}
 
 // OpenControl выполняет установление связи TWAMP-Control.
 func OpenControl(cfg ControlConfig) (*Control, error) {
@@ -127,18 +162,52 @@ func OpenControlContext(ctx context.Context, cfg ControlConfig) (*Control, error
 		_ = tcp.SetNoDelay(true)
 	}
 
-	c := &Control{conn: conn}
+	c := &Control{conn: conn, exchangeTimeout: cfg.ExchangeTimeout}
+	if c.exchangeTimeout == 0 {
+		c.exchangeTimeout = defaultExchangeTimeout
+	}
+	c.watchContext(ctx)
+
 	if err := c.setup(cfg); err != nil {
-		conn.Close()
+		c.Close()
 		return nil, err
 	}
 	return c, nil
+}
+
+// watchContext закрывает соединение, когда контекст отменяют.
+//
+// Дедлайнов для этого мало: они спасают от молчащего сервера, но не от отмены
+// посреди уже начатого чтения. Закрытие сокета прерывает и его — вызывающая
+// программа получает ошибку сразу, а не через полминуты.
+func (c *Control) watchContext(ctx context.Context) {
+	if ctx == nil || ctx.Done() == nil {
+		return // контекст без отмены — сторожить нечего
+	}
+
+	c.watchdogDone = make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.conn.Close()
+		case <-c.watchdogDone:
+		}
+	}()
+}
+
+// deadline готовит соединение к очередному шагу обмена.
+func (c *Control) deadline() {
+	if c.exchangeTimeout <= 0 {
+		return // «без ограничения» — так просили явно
+	}
+	_ = c.conn.SetDeadline(time.Now().Add(c.exchangeTimeout))
 }
 
 func (c *Control) setup(cfg ControlConfig) error {
 	// --- Server-Greeting (64 октета, без шифрования) --------------------
 	var greeting [greetingLen]byte
 	start := time.Now()
+	c.deadline()
 	if _, err := io.ReadFull(c.conn, greeting[:]); err != nil {
 		return fmt.Errorf("чтение Server-Greeting: %w", err)
 	}
@@ -226,6 +295,7 @@ func (c *Control) setup(cfg ControlConfig) error {
 		c.recvHMAC = hmac.New(sha1.New, c.hmacKey)
 	}
 
+	c.deadline()
 	if _, err := c.conn.Write(resp[:]); err != nil {
 		return fmt.Errorf("запись Set-Up-Response: %w", err)
 	}
@@ -233,6 +303,7 @@ func (c *Control) setup(cfg ControlConfig) error {
 	// --- Server-Start (48 октетов, последний блок шифруется) ------------
 	var ss [serverStartLen]byte
 	start = time.Now()
+	c.deadline()
 	if _, err := io.ReadFull(c.conn, ss[:32]); err != nil {
 		return fmt.Errorf("чтение Server-Start: %w", err)
 	}
@@ -257,6 +328,7 @@ func (c *Control) setup(cfg ControlConfig) error {
 		c.decrypt = cipher.NewCBCDecrypter(sessionBlock, serverIV)
 	}
 
+	c.deadline()
 	if _, err := io.ReadFull(c.conn, ss[32:48]); err != nil {
 		return fmt.Errorf("чтение поля uptime в Server-Start: %w", err)
 	}
@@ -294,12 +366,14 @@ func (c *Control) sendBlocks(buf []byte) error {
 	if c.encrypt != nil {
 		c.encrypt.CryptBlocks(buf, buf)
 	}
+	c.deadline()
 	_, err := c.conn.Write(buf)
 	return err
 }
 
 // recvBlocks читает и расшифровывает целые блоки по 16 октетов.
 func (c *Control) recvBlocks(buf []byte) error {
+	c.deadline()
 	if _, err := io.ReadFull(c.conn, buf); err != nil {
 		return err
 	}
