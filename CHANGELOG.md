@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), нумерация версий —
 [семантическому версионированию](https://semver.org/lang/ru/).
 
+## [1.3.1] - 2026-09-05
+
+### Изменено
+
+- CI: отключён кэш модулей в setup-go. Зависимостей у проекта нет, go.sum
+  отсутствует, и каждый прогон предупреждал о неудачном восстановлении кэша.
+
 ## [1.3.0] - 2026-09-05
 
 ### Добавлено
@@ -132,6 +139,7 @@
 Машинный формат `-M` и формат сырых записей `-R` сохранены без изменений, включая
 имена полей, — ради совместимости с внешними разборщиками и с оригиналом.
 
+[1.3.1]: https://github.com/akprof2000/twping-go/releases/tag/v1.3.1
 [1.3.0]: https://github.com/akprof2000/twping-go/releases/tag/v1.3.0
 [1.2.0]: https://github.com/akprof2000/twping-go/releases/tag/v1.2.0
 [1.1.0]: https://github.com/akprof2000/twping-go/releases/tag/v1.1.0
