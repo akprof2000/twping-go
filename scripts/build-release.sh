@@ -18,6 +18,11 @@ mkdir -p "$OUT"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
+# Единое время файлов в архивах: иначе tar и zip записывают момент сборки,
+# и две сборки одного коммита дают разные архивы. Берём время коммита,
+# как принято для SOURCE_DATE_EPOCH.
+EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 0)}"
+
 build() {
     local goos="$1" goarch="$2"
     local name="twping-go_${VERSION}_${goos}_${goarch}"
@@ -39,12 +44,18 @@ build() {
             -o "$dir/$bin" ./cmd/twping
 
     cp README.md LICENSE NOTICE "$dir/"
+    find "$dir" -exec touch -d "@$EPOCH" {} +
 
     if [ "$goos" = windows ]; then
-        (cd "$STAGE" && zip -q -r "$name.zip" "$name")
+        # -X не пишет расширенные атрибуты с uid/gid, а TZ фиксирует
+        # локальное время, в котором zip хранит метки файлов.
+        (cd "$STAGE" && TZ=UTC zip -q -X -r "$name.zip" "$name")
         mv "$STAGE/$name.zip" "$OUT/"
     else
-        tar -czf "$OUT/$name.tar.gz" -C "$STAGE" "$name"
+        # Фиксированный порядок файлов, владелец и время; gzip -n не пишет
+        # имя и время исходного файла в заголовок.
+        tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$EPOCH" \
+            -cf - -C "$STAGE" "$name" | gzip -n -9 > "$OUT/$name.tar.gz"
     fi
 }
 

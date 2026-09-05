@@ -76,6 +76,9 @@ func TestOpenControl_CancelStopsSilentServer(t *testing.T) {
 	if err == nil {
 		t.Fatal("после отмены соединение считается открытым")
 	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("ожидалась ошибка отмены контекста, получено %v", err)
+	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Errorf("отмена сработала через %v — соединение не закрылось", elapsed)
 	}

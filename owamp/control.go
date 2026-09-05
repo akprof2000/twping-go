@@ -170,6 +170,11 @@ func OpenControlContext(ctx context.Context, cfg ControlConfig) (*Control, error
 
 	if err := c.setup(cfg); err != nil {
 		c.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Сторож закрыл соединение по отмене: вызывающему важна
+			// причина, а не «закрытый сокет», в который она вылилась.
+			return nil, ctxErr
+		}
 		return nil, err
 	}
 	return c, nil

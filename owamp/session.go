@@ -187,8 +187,10 @@ type RecordSink func(*TWDataRec) error
 
 type pktState struct {
 	when time.Time // запланированный момент отправки
-	sent bool
-	hit  bool
+	// hit означает, что пакету не нужна запись о потере: пришёл ответ либо
+	// отправитель пропустил его как безнадёжно опоздавший. Поле атомарное,
+	// потому что его ставят обе горутины — приёма и отправки.
+	hit atomic.Bool
 	// closed помечает пакет, у которого истёк таймаут потери;
 	// пришедшие позже ответы на него отбрасываются, а не
 	// считаются дубликатами.
@@ -255,8 +257,8 @@ func (s *Session) Run(spec TestSpec, sid [sidLen]byte, sink RecordSink) error {
 			if now.Before(p.when.Add(timeout)) {
 				return nil
 			}
-			if !p.hit {
-				if err := sink(lostRecord(resolved, p.when.Add(timeout), timeout, s.cfg.Clock)); err != nil {
+			if !p.hit.Load() {
+				if err := sink(lostRecord(resolved, p.when.Add(timeout), s.cfg.Clock)); err != nil {
 					return err
 				}
 			}
@@ -292,7 +294,7 @@ func (s *Session) Run(spec TestSpec, sid [sidLen]byte, sink RecordSink) error {
 			if seq >= spec.NPackets || pkts[seq].closed {
 				continue // вне окна приёма либо мусор
 			}
-			pkts[seq].hit = true
+			pkts[seq].hit.Store(true)
 			rec := item.rec
 			if err := sink(&rec); err != nil {
 				return err
@@ -334,7 +336,7 @@ func (s *Session) Run(spec TestSpec, sid [sidLen]byte, sink RecordSink) error {
 
 // lostRecord формирует синтетическую запись, которую owamp пишет
 // для пакета, так и не вернувшегося обратно.
-func lostRecord(seq uint32, at time.Time, _ time.Duration, clk Clock) *TWDataRec {
+func lostRecord(seq uint32, at time.Time, clk Clock) *TWDataRec {
 	stamp := clk.StampAt(at)
 	rec := &TWDataRec{Lost: true}
 	rec.Sent.SeqNo = seq
@@ -351,8 +353,8 @@ func lostRecord(seq uint32, at time.Time, _ time.Duration, clk Clock) *TWDataRec
 func flushAll(pkts []pktState, timeout time.Duration, resolved *uint32, sink RecordSink, clk Clock) error {
 	for *resolved < uint32(len(pkts)) {
 		p := &pkts[*resolved]
-		if !p.hit {
-			if err := sink(lostRecord(*resolved, p.when.Add(timeout), timeout, clk)); err != nil {
+		if !p.hit.Load() {
+			if err := sink(lostRecord(*resolved, p.when.Add(timeout), clk)); err != nil {
 				return err
 			}
 		}
@@ -418,7 +420,7 @@ func (s *Session) send(spec TestSpec, pkts []pktState) error {
 			// Слишком поздно, чтобы это имело смысл; считаем пакет
 			// отправленным и отвеченным, чтобы поток записей
 			// не застрял.
-			p.sent, p.hit = true, true
+			p.hit.Store(true)
 			continue
 		}
 
@@ -484,7 +486,6 @@ func (s *Session) send(spec TestSpec, pkts []pktState) error {
 			}
 			continue
 		}
-		p.sent = true
 		s.sentCount.Add(1)
 	}
 	return nil
@@ -550,7 +551,12 @@ func (s *Session) receive(out chan<- rxItem, stop <-chan struct{}) {
 			if errors.As(err, &nerr) && nerr.Timeout() {
 				continue
 			}
-			out <- rxItem{err: err}
+			// Run мог уже завершиться: без select с stop горутина
+			// зависла бы навсегда на полном канале.
+			select {
+			case out <- rxItem{err: err}:
+			case <-stop:
+			}
 			return
 		}
 		recvAt := time.Now()
@@ -571,7 +577,11 @@ func (s *Session) receive(out chan<- rxItem, stop <-chan struct{}) {
 			continue
 		}
 		s.recvCount.Add(1)
-		out <- rxItem{rec: rec}
+		select {
+		case out <- rxItem{rec: rec}:
+		case <-stop:
+			return
+		}
 	}
 }
 

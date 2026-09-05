@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -154,6 +155,14 @@ type StatsConfig struct {
 	RecordLimit uint64
 	// UnixTimestamps переключает построчный вывод в формат -U.
 	UnixTimestamps bool
+	// Language задаёт язык построчного вывода: единицы измерения и пометку
+	// потерянного пакета. Сводка выбирает язык отдельно, при печати.
+	Language Language
+
+	// NoReflectedTTL сообщает, что TTL отражённых пакетов прочитать не
+	// удалось (например, в Windows). Тогда в записях стоит подставное
+	// значение 255, и его не нужно считать за настоящее число хопов.
+	NoReflectedTTL bool
 }
 
 type packetInfo struct {
@@ -194,8 +203,10 @@ type Stats struct {
 
 	startTime Num64
 	endTime   Num64
-	haveRange bool
 
+	// first и last ограничивают диапазон встреченных порядковых номеров:
+	// [first, last). Записи приходят в порядке завершения, а не по номерам,
+	// поэтому это минимум и максимум, а не первая и последняя запись.
 	first, last uint32
 	haveFirst   bool
 
@@ -206,7 +217,7 @@ const infDelay = math.MaxFloat64 / 4
 
 // NewStats создаёт пустой накопитель статистики.
 func NewStats(cfg StatsConfig) (*Stats, error) {
-	scale, abrv, err := ScaleFactor(cfg.Unit)
+	scale, _, err := ScaleFactor(cfg.Unit)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +227,7 @@ func NewStats(cfg StatsConfig) (*Stats, error) {
 	s := &Stats{
 		cfg:   cfg,
 		scale: scale,
-		abrv:  abrv,
+		abrv:  unitAbbrev(cfg.Unit, cfg.Language),
 		fwd:   make(map[uint32]*packetInfo, cfg.NPackets),
 		bck:   make(map[uint32]*packetInfo, cfg.NPackets),
 	}
@@ -250,7 +261,12 @@ func (s *Stats) Add(rec *TWDataRec) error {
 		s.startTime = rec.Sent.Send.Time
 		s.haveFirst = true
 	}
-	s.last = rec.Sent.SeqNo + 1
+	if rec.Sent.SeqNo < s.first {
+		s.first = rec.Sent.SeqNo
+	}
+	if rec.Sent.SeqNo+1 > s.last {
+		s.last = rec.Sent.SeqNo + 1
+	}
 	if rec.Reflected.Recv.Time > s.endTime {
 		s.endTime = rec.Reflected.Recv.Time
 	}
@@ -272,7 +288,11 @@ func (s *Stats) Add(rec *TWDataRec) error {
 			s.maxErr[i] = math.Max(s.maxErr[i], derr)
 		}
 		if s.cfg.RecordOutput != nil && s.mayPrint() {
-			fmt.Fprintf(s.cfg.RecordOutput, "seq_no=%-10d *ПОТЕРЯН*\n", rec.Sent.SeqNo)
+			label := "*LOST*"
+			if s.cfg.Language == Russian {
+				label = "*ПОТЕРЯН*"
+			}
+			fmt.Fprintf(s.cfg.RecordOutput, "seq_no=%-10d %s\n", rec.Sent.SeqNo, label)
 		}
 		return nil
 	}
@@ -356,7 +376,9 @@ func (s *Stats) Add(rec *TWDataRec) error {
 		s.buckets[i][b]++
 	}
 	s.ttlCount[TTLFwd][rec.Sent.TTL]++
-	s.ttlCount[TTLBck][rec.Reflected.TTL]++
+	if !s.cfg.NoReflectedTTL {
+		s.ttlCount[TTLBck][rec.Reflected.TTL]++
+	}
 	return nil
 }
 
@@ -479,9 +501,8 @@ func (s *Stats) ttlRange(t TTLType) (values int, minTTL, maxTTL uint8) {
 	return
 }
 
-// PrintSummary печатает человекочитаемую сводку с той же структурой, что и
-// у twping.
-// PrintSummary печатает сводку подписями оригинального twping (английскими).
+// PrintSummary печатает человекочитаемую сводку с той же структурой и теми же
+// подписями, что и у оригинального twping (английскими).
 func (s *Stats) PrintSummary(w io.Writer, percentiles []float64) {
 	s.PrintSummaryLang(w, percentiles, English)
 }
@@ -687,8 +708,8 @@ func ParsePercentiles(arg string) ([]float64, error) {
 		if f == "" {
 			continue
 		}
-		var v float64
-		if _, err := fmt.Sscanf(f, "%g", &v); err != nil {
+		v, err := strconv.ParseFloat(f, 64)
+		if err != nil || math.IsNaN(v) {
 			return nil, fmt.Errorf("недопустимый процентиль %q", f)
 		}
 		if v < 0 || v > 100 {

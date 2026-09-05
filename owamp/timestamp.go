@@ -96,20 +96,14 @@ type Clock struct {
 // Now возвращает текущее время как Timestamp.
 func (c Clock) Now() (Timestamp, time.Time) {
 	wall := time.Now()
-	ts := Timestamp{Time: Num64FromTime(wall), Sync: c.Sync}
-	ts.SetErrEstimate(c.ErrUsec)
-	if c.ErrUsec == 0 {
-		ts.Sync = false
-	}
-	return ts, wall
+	return c.StampAt(wall), wall
 }
 
 // StampAt формирует Timestamp для уже снятого значения настенных часов.
+// Нулевая оценка погрешности означает несинхронизированные часы: SetErrEstimate
+// сам снимает признак Sync.
 func (c Clock) StampAt(wall time.Time) Timestamp {
 	ts := Timestamp{Time: Num64FromTime(wall), Sync: c.Sync}
 	ts.SetErrEstimate(c.ErrUsec)
-	if c.ErrUsec == 0 {
-		ts.Sync = false
-	}
 	return ts
 }

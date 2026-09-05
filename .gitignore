@@ -1,5 +1,7 @@
-# Собранные бинарники
+# Собранные бинарники. Правило /twping задело бы и каталог пакета twping,
+# поэтому каталог возвращается следующей строкой.
 /twping
+!/twping/
 /twping.exe
 /testing/twping-go
 /testing/twping-go.exe

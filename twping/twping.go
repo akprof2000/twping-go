@@ -58,7 +58,6 @@ type options struct {
 	bucketWidth float64
 	machine     bool
 	units       string
-	subCount    uint
 	quiet       bool
 	raw         bool
 	verbose     string
@@ -125,11 +124,24 @@ func Run(ctx context.Context, args []string, out, errOut io.Writer) error {
 	return RunLang(ctx, args, out, errOut, owamp.English)
 }
 
+// errInterrupted возвращается, когда замер остановлен отменой контекста.
+var errInterrupted = errors.New("прервано")
+
 // RunLang делает то же, что Run, но позволяет выбрать язык подписей в сводке.
 func RunLang(ctx context.Context, args []string, out, errOut io.Writer, lang owamp.Language) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	err := run(ctx, args, out, errOut, lang)
+	if err != nil && ctx.Err() != nil {
+		// Отмена доходит до сокетов через их закрытие, поэтому после неё
+		// любая ошибка — её следствие, а не самостоятельная причина.
+		return errInterrupted
+	}
+	return err
+}
+
+func run(ctx context.Context, args []string, out, errOut io.Writer, lang owamp.Language) error {
 	var o options
 	fs := flag.NewFlagSet(progName, flag.ContinueOnError)
 	fs.SetOutput(errOut)
@@ -157,7 +169,6 @@ func RunLang(ctx context.Context, args []string, out, errOut io.Writer, lang owa
 	fs.Float64Var(&o.bucketWidth, "b", 0.0001, "ширина корзины гистограммы (секунды)")
 	fs.BoolVar(&o.machine, "M", false, "машиночитаемая сводка")
 	fs.StringVar(&o.units, "n", "m", "единицы измерения: n, u, m или s")
-	fs.UintVar(&o.subCount, "N", 0, "пакетов на одну подсводку сессии")
 	fs.BoolVar(&o.quiet, "Q", false, "не выводить статистику")
 	fs.BoolVar(&o.raw, "R", false, "печатать сырые записи")
 	fs.StringVar(&o.verbose, "v", "", "печатать задержки по каждому пакету (можно -v=N)")
@@ -395,7 +406,7 @@ func RunLang(ctx context.Context, args []string, out, errOut io.Writer, lang owa
 	}
 
 	if err := cntrl.StartSessions(); err != nil {
-		return fmt.Errorf("session failed: %w", err)
+		return fmt.Errorf("сессия не запустилась: %w", err)
 	}
 
 	if !o.quiet {
@@ -440,6 +451,10 @@ func RunLang(ctx context.Context, args []string, out, errOut io.Writer, lang owa
 		Padding:     spec.Padding,
 		TypeP:       spec.TypeP,
 		LossTimeout: spec.LossTimeout,
+		Language:    lang,
+		// Там, где принятый TTL прочитать нельзя, в записях стоит
+		// подставное 255, и число хопов обратного пути не сообщается.
+		NoReflectedTTL: !sess.HaveReflectedTTL(),
 	}
 	if verboseOn, limit := parseVerbose(o.verbose); verboseOn && !o.quiet && !o.raw {
 		statsCfg.RecordOutput = stdout
@@ -490,7 +505,7 @@ func RunLang(ctx context.Context, args []string, out, errOut io.Writer, lang owa
 	runErr := sess.Run(spec, sid, sink)
 
 	if ctx.Err() != nil {
-		return errors.New("прервано")
+		return errInterrupted
 	}
 
 	accept := owamp.AcceptOK
@@ -579,7 +594,7 @@ func parsePortRange(s string) (owamp.PortRange, error) {
 	if found {
 		h, err := strconv.ParseUint(strings.TrimSpace(hi), 10, 16)
 		if err != nil {
-			return pr, fmt.Errorf("invalid port range %q", s)
+			return pr, fmt.Errorf("недопустимый диапазон портов %q", s)
 		}
 		pr.High = uint16(h)
 	}
