@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Тесты (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      # Проверяем форматирование только на Linux: достаточно одного прогона.
+      - name: Проверка форматирования
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Этим файлам нужен gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Статический анализ
+        run: go vet ./...
+
+      - name: Тесты
+        run: go test -count=1 ./...
+
+      - name: Тесты с детектором гонок
+        run: go test -race -count=1 ./...
+
+  cross-build:
+    name: Кросс-сборка
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      # Проверяем, что собирается каждая целевая платформа релиза.
+      - name: Сборка всех целевых платформ
+        shell: bash
+        run: |
+          while read -r goos goarch; do
+            echo "==> $goos/$goarch"
+            GOOS=$goos GOARCH=$goarch go build ./...
+          done <<'TARGETS'
+          linux amd64
+          linux arm64
+          windows amd64
+          windows arm64
+          darwin amd64
+          darwin arm64
+          TARGETS

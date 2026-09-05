@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег, для которого собрать релиз'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # При ручном запуске собираем именно указанный тег, а не ветку,
+          # с которой запущен workflow.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+
+      - name: Тесты
+        run: go test -count=1 ./...
+
+      - name: Сборка архивов релиза
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: bash ./scripts/build-release.sh "$TAG"
+
+      - name: Проверка, что версия попала в бинарник
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          tar -xzf "dist/twping-go_${TAG}_linux_amd64.tar.gz" -C /tmp
+          got=$(/tmp/twping-go_${TAG}_linux_amd64/twping -h 2>&1 | sed -n 's/^Версия: //p')
+          want="${TAG#v}"
+          if [ "$got" != "$want" ]; then
+            echo "В бинарнике версия '$got', ожидалась '$want'"
+            exit 1
+          fi
+          echo "Версия в бинарнике: $got"
+
+      - name: Публикация релиза
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # Повторный запуск на существующем теге догружает ассеты,
+          # а не падает на попытке создать релиз заново.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "twping-go $TAG" \
+              --generate-notes
+          fi
